@@ -1,0 +1,3 @@
+gcloud builds submit --tag gcr.io/marvelmaps-348313/marvelmaps-v1  --project=marvelmaps-348313
+
+gcloud run deploy --image gcr.io/marvelmaps-348313/marvelmaps-v1 --platform managed  --project=marvelmaps-348313 --allow-unauthenticated

@@ -1,0 +1,8 @@
+{
+    "cnames": {
+        "orders": "Name",
+        "clients": "Email",
+        "revenue": "Total",
+        "zip": "Billing Zip"
+    }
+}
