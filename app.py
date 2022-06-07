@@ -1,33 +1,42 @@
-import maps
+import plots
 import dash
 import json
-import base64
 import dash_table as dt
+import pandas as pd
 
 from dash import dcc, html, callback_context
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
 
 
-CONFIG = {}
+DUMMY_DATA = True
 
+# Static collumn names to use when enriching data
+CONFIG = {
+    "cnames": {
+        "orders": "Name",
+        "clients": "Email",
+        "revenue": "Total",
+        "zip": "Billing Zip"
+    }
+}
+
+# Links to get (http request) geojson files
 url_counties = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=2.0.0&typeName=cbs_gemeente_2017_gegeneraliseerd&outputFormat=json"
 url_states = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=1.1.0&typeName=cbsgebiedsindelingen:cbs_provincie_2022_gegeneraliseerd&outputFormat=json"
 
 options_dropdown = [
     {'label': 'Total orders', 'value': 'orders'},
     {'label': 'Total clients', 'value': 'clients'},
-    {'label': 'Revenue', 'value': 'revenue'}
+    {'label': 'Revenue', 'value': 'revenue'},
+    {'label': 'Lifetime Value (LTV)', 'value': 'LTV'},
+    {'label': 'Average Order Value (AOV)', 'value': 'AOV'}
 ]
 
-with open("data/config.json", 'r') as file:
-    CONFIG.update(json.load(file))
-
-# image_filename = 'data/Marveltest_Logo_DarkBlue (1).png' # replace with your own image
-# encoded_image = base64.b64encode(open(image_filename, 'rb').read())
+# with open("data/config.json", 'r') as file:
+#     CONFIG.update(json.load(file))
 
 app = dash.Dash(__name__)
-
 server = app.server
 
 ###############################################################################
@@ -39,10 +48,10 @@ app.layout = html.Div(children=[
     dcc.RadioItems(
         id='region_selection',
         options=[
-            {'label': 'Provinces', 'value': 'prov'},
-            {'label': 'Counties', 'value': 'cnty'}
+            {'label': 'Provinces', 'value': 'Provinces'},
+            {'label': 'Counties', 'value': 'Counties'}
         ],
-        value='prov'
+        value='Provinces'
     ),
 
     html.Div([
@@ -73,7 +82,9 @@ app.layout = html.Div(children=[
         multiple=True
     ),
 
-    html.Button('Generate Map', id='button_gen'),
+    html.Button('Read data', id='button_data'),
+
+    html.Button('Generate Figures', id='button_gen'),
 
     html.Div(children=[
         dcc.Graph(id='choropleth', style={'width': '50%', 'display': 'inline-block'}),
@@ -90,7 +101,11 @@ app.layout = html.Div(children=[
                     'backgroundColor': '#13265290',
                     'fontWeight': 'bold'
     },
-                 sort_action="native")
+                 sort_action="native"
+    ),
+
+    dcc.Store(id="datasets", storage_type='session')
+
 ], style={'margin': 'auto', 'width': '80%'})
 
 ###############################################################################
@@ -98,34 +113,56 @@ app.layout = html.Div(children=[
 ###############################################################################
 
 
-@app.callback(Output('choropleth', 'figure'),
-              Output('histogram', 'figure'),
-              Output('data-table', 'data'),
+@app.callback(Output('data-table', 'data'),
               Output('data-table', 'columns'),
+              Output('histogram', 'figure'),
+              Output('choropleth', 'figure'),
               Input('button_gen', 'n_clicks'),
-              State('upload_data', 'contents'),
-              State('upload_data', 'filename'),
+              State('datasets', 'data'),
               State('metric_selection', 'value'),
               State('region_selection', 'value'))
-def update_output(n_clicks, list_of_contents, list_of_names, metric, region):
+def update_figures(n_clicks, datasets_json, metric, region):
     changed_id = [p['prop_id'] for p in callback_context.triggered][0]
 
-    if 'button_gen' in changed_id and list_of_contents is not None:
-        return maps.generate_figures(list_of_contents, list_of_names, metric, region, CONFIG, url_states, url_counties)
+    if not (datasets_json is not None and 'button_gen' in changed_id):
+        raise PreventUpdate
 
-    elif 'button_gen' in changed_id:
-        print('Upload file first')
+    datasets = json.loads(datasets_json)
+    df = pd.DataFrame.from_records(datasets[region])
+    df.sort_values(metric, inplace=True, ascending=False)
 
-    raise PreventUpdate
+    mmap = plots.generate_map(df, metric, region, url_states, url_counties)
+
+    if region == 'Counties':
+        df = df.reset_index(drop=True).iloc[:10]
+
+    histogram = plots.generate_histogram(df, metric)
+    data, columns = plots.generate_table(df)
+
+    return data, columns, histogram, mmap
 
 
-# @app.callback(Output("", "options"),
-#               Input("", "value"))
-# def update_histogram_ordering():
+if DUMMY_DATA:
+    @app.callback(Output('datasets', 'data'),
+                Input('button_data', 'n_clicks'))
+    def process_data(n_clicks):
+        if not 'button_gen' in [p['prop_id'] for p in callback_context.triggered][0]:
+            raise PreventUpdate
+
+        return plots.enrich_data([], [], url_states, url_counties, DUMMY_DATA)
+else:
+    @app.callback(Output('datasets', 'data'),
+                Input('button_data', 'n_clicks'),
+                State('upload_data', 'contents'),
+                State('upload_data', 'filename'))
+    def process_data(n_clicks, list_of_contents, list_of_names):
+        if not ('button_gen' in [p['prop_id'] for p in callback_context.triggered][0] or list_of_contents):
+            raise PreventUpdate
+
+        return plots.enrich_data(list_of_contents, list_of_names, url_states, url_counties)
 
 
-@app.callback(
-    Output("metric_selection", "options"), 
+@app.callback(Output("metric_selection", "options"),
     Input("region_selection", "value"))
 def update_dropdown(region):
     if region == 'prov':

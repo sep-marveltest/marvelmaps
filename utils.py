@@ -1,23 +1,19 @@
+import json
 import pandas as pd
 
 
 FILE_DATA_NL = "data/data_NL.csv"
+CUR = "€"
 
-RANDSTAD = ['Amersfoort',
-            'Utrecht',
-            'Hilversum',
-            'Amsterdam',
-            'Haarlem',
-            'Leiden',
-            'Den Haag',
-            'Rotterdam',
-            'Dordrecht']
-
-
+# Reads static data of the Netherlands;
+# - zip to region
+# - BBP of region
+# - Population of region
 def read_NL_data():
     return pd.read_csv(FILE_DATA_NL)
 
 
+# Converts a zipcode to region
 def zip_to_region(data_NL, zip_, cname):
     try:
         row = data_NL.loc[data_NL['postal code'] == int(zip_)]
@@ -27,39 +23,32 @@ def zip_to_region(data_NL, zip_, cname):
         return 0
 
 
-def get_regional_metrics(level, cnames, client_data, data_NL):
-    output = pd.DataFrame()
-    reg_name = 0
+# Changes crs coding of geojson file
+def change_crs(gdf):
+    gdf = gdf.to_crs(epsg=4326)
+    gdf.to_file('data/geojsfile.json', driver = 'GeoJSON')
 
-    if level == 'province':
-        reg_name = 'state'
-        cname = 'state'
+    with open('data/geojsfile.json') as geofile:
+        data = json.load(geofile)
 
-    elif level == 'county':
-        reg_name = level
-        cname = 'province_or_county'
-
-    regions = [zip_to_region(data_NL, r[cnames['zip']], cname) for _, r in client_data.iterrows()]
-
-    client_data[reg_name] = regions
-    client_data = client_data[client_data[reg_name] != 0].reset_index(drop=True)
-    grp = client_data.groupby(by=reg_name, dropna=True)
+    return data
 
 
-    output['orders'] = grp.count()[cnames['orders']]
-    output['clients'] = grp.count()[cnames['clients']]
-    output['revenue'] = grp.sum()[cnames['revenue']]
+# Add currency symbol to strings in passed columns
+def add_currency(df, columns):
+    for col in columns:
+        df[col] = df[col].apply(lambda x: CUR + "{:.2f}".format(x))
 
-    if level == "province":
-        output['clients_pop'] = [data_NL[data_NL['state'] == p].iloc[0]['Population province']
-                                for p, _ in output.iterrows()]
-        output['clients_pop'] = [output['clients'][i] * 100000 / int(output['clients_pop'][i].replace('.', '')) for i in range(output.shape[0])]
+    return df
 
-        output['rev_BBP'] = [data_NL[data_NL['state'] == p].iloc[0]['BBP province']
-                            for p, _ in output.iterrows()]
-        output['rev_BBP'] = [output['revenue'][i] / int(output['rev_BBP'][i]) for i in range(output.shape[0])]
 
-    elif level == "county":
-        output['randstad'] = [True if c in RANDSTAD else False for c in output.index]
+# Determine which separator is used; comma or dot
+def find_separator(column):
+    for val in column:
+        val = str(val)
 
-    return output
+        if '.' in val and ',' not in val:
+            return '.'
+
+        elif '.' not in val and ',' in val:
+            return ','
