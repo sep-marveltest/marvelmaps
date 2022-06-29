@@ -8,6 +8,7 @@ from dash import dcc, html, callback_context
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
 
+
 # Static collumn names to use when enriching data
 CONFIG = {
     "cnames": {
@@ -33,12 +34,13 @@ options_dropdown = [
 app = dash.Dash(__name__)
 server = app.server
 
-
 ###############################################################################
 #                           APP (BEGIN)
 ###############################################################################
+
 app.layout = html.Div(children=[
-    html.Div(html.Img(src='assets/marvel_logo.png', style={'height':'20%', 'width':'20%'})),
+    html.Div(html.Img(src='assets/marvel_logo.png',
+                      style={'height':'20%', 'width':'20%'})),
 
     dcc.RadioItems(
         id='region_selection',
@@ -57,32 +59,13 @@ app.layout = html.Div(children=[
     )
     ]),
 
-    dcc.Upload(
-        id='upload_data',
-        children=html.Div([
-            'Drag and Drop or ',
-            html.A('Select Files')
-        ]),
-        style={
-            'width': '100%',
-            'height': '60px',
-            'lineHeight': '60px',
-            'borderWidth': '1px',
-            'borderStyle': 'dashed',
-            'borderRadius': '5px',
-            'textAlign': 'center',
-            'margin': '10px'
-        },
-        # Allow multiple files to be uploaded
-        multiple=True
-    ),
-
-    html.Button('Read data', id='button_data'),
-
     html.Button('Update Figures', id='button_U'),
 
+    html.H3('* Dummy Dataset *'),
+
     html.Div(children=[
-        dcc.Graph(id='choropleth', style={'width': '50%', 'display': 'inline-block'}),
+        dcc.Graph(id='choropleth',
+                style={'width': '50%', 'display': 'inline-block'}),
         dcc.Graph(id='histogram',
                   style={'width': '50%', 'display': 'inline-block'})],
         style={'backgroundColor': '#13265290'}
@@ -103,9 +86,19 @@ app.layout = html.Div(children=[
 
 ], style={'margin': 'auto', 'width': '80%'})
 
+
 ###############################################################################
 #                           APP (END)
 ###############################################################################
+
+@app.callback(Output('datasets', 'data'),
+              Input('button_U', 'n_clicks'),
+              State('datasets', 'data'))
+def load_data(n_clicks, datasets_json):
+    if datasets_json is not None:
+        raise PreventUpdate
+
+    return plots.enrich_data([], [], url_states, url_counties, dummy_data=True)
 
 
 @app.callback(Output('data-table', 'data'),
@@ -119,8 +112,9 @@ app.layout = html.Div(children=[
 def update_figures(n_clicks, datasets_json, metric, region):
     changed_id = [p['prop_id'] for p in callback_context.triggered][0]
 
-    if not (datasets_json is not None and 'button_U' in changed_id):
+    if datasets_json is None or 'button_U' not in changed_id:
         raise PreventUpdate
+
 
     datasets = json.loads(datasets_json)
     df = pd.DataFrame.from_records(datasets[region])
@@ -135,17 +129,6 @@ def update_figures(n_clicks, datasets_json, metric, region):
     data, columns = plots.generate_table(df)
 
     return data, columns, histogram, mmap
-
-
-@app.callback(Output('datasets', 'data'),
-                Input('button_data', 'n_clicks'),
-                State('upload_data', 'contents'),
-                State('upload_data', 'filename'))
-def process_data(n_clicks, list_of_contents, list_of_names):
-    if not ('button_U' in [p['prop_id'] for p in callback_context.triggered][0] or list_of_contents):
-        raise PreventUpdate
-
-    return plots.enrich_data(list_of_contents, list_of_names, url_states, url_counties)
 
 
 @app.callback(Output("metric_selection", "options"),
