@@ -40,33 +40,49 @@ h1 {
 
 /* Options */
 /* --------------------------------------- */
-#options {
-    display: inline;
+#options-container {
+    height: 3rem;
 }
 
-#metric-buttons-container {
-    width: 80%;
+#metric-buttons {
+    height: 100%;
+    float: left;
 }
 
-#region-switch {
-    width: 50px;
+#region-is-states-switch {
     height: 100%;
     float: right;
+}
+
+.metric-button {
+    height: 100%;
+    margin-right: 1rem;
 }
 
 
 /* Figures */
 /* --------------------------------------- */
+#marvelmap-container {
+    width: 50%;
+    float: left;
+}
+
 #choropleth {
-    display: 'inline'
+
+
+}
+
+#marvelchart-container {
+    width: 50%;
+    float: right;
 }
 
 #histogram {
     display: 'inline'
 }
 
-#datatable {
+#data-table {
     color: 'black';
     background-color: '#EFF4FA';
-    font-weight: 'bold'
+    font-weight: 'bold';
 }

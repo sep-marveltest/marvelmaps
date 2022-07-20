@@ -37,7 +37,8 @@ def add_currency(df, columns):
 # Generates table parameters from given dataframe
 def generate_table(df_in):
     df_out = pd.DataFrame(df_in, copy=True)
-    df_out = add_currency(df_out, ['Gross sales', 'Net sales'])
+    df_out = add_currency(df_out,
+                         ['Gross sales', 'Net sales', 'Life Time Value'])
     table_data = df_out.to_dict('records')
     table_columns = [{"name": i, "id": i} for i in df_out.columns]
 
@@ -74,45 +75,73 @@ merge = orders_df.merge(
 # Group the merged data by states and re-organise to get metrics
 df_states = (merge.groupby(by=['state', 'Population province', 'BBP province'])
                   .agg({'Lineitem quantity': 'sum',
-                   'Lineitem price'   : 'sum',
-                   'Lineitem discount': 'sum',
-                   'Tax 1 Value'      : 'sum',
-                   'Name'             : 'count',
+                        'Lineitem price'   : 'sum',
+                        'Lineitem discount': 'sum',
+                        'Tax 1 Value'      : 'sum',
+                        'Name'             : 'count',
+                        'Email'            : 'count'
                    })
                   .reset_index()
                   .rename(columns={'state'              : 'State',
-                              'Lineitem quantity'  : 'Products',
-                              'Lineitem price'     : 'Gross sales',
-                              'Lineitem discount'  : 'Discounts',
-                              'Tax 1 Value'        : 'Taxes',
-                              'Name'               : 'Orders',
-                              'Population province': 'State population',
-                              'BBP province'       : 'State BBP'}))
+                                   'Lineitem quantity'  : 'Products',
+                                   'Lineitem price'     : 'Gross sales',
+                                   'Lineitem discount'  : 'Discounts',
+                                   'Tax 1 Value'        : 'Taxes',
+                                   'Name'               : 'Orders',
+                                   'Email'              : 'Customers',
+                                   'Population province': 'State population',
+                                   'BBP province'       : 'State BBP'}))
 
 # Add net sales metrics for each state
 df_states['Net sales'] = (df_states['Gross sales']
                           - df_states['Discounts']
                           - df_states['Taxes'])
+df_states['Life Time Value'] = (df_states['Net sales'] / df_states['Customers'])
+df_states = df_states.round(2)
+
+# Reorder columns for beter datatable reading
+df_states = df_states[[
+    'State',
+    'Orders',
+    'Products',
+    'Gross sales',
+    'Net sales',
+    'Life Time Value'
+]]
 
 # Group the merged data by counties and re-organise to get metrics
 df_counties = (merge.groupby(by=['province_or_county'])
                     .agg({'Lineitem quantity': 'sum',
-                     'Lineitem price'   : 'sum',
-                     'Lineitem discount': 'sum',
-                     'Tax 1 Value'      : 'sum',
-                     'Name'             : 'count'})
+                          'Lineitem price'   : 'sum',
+                          'Lineitem discount': 'sum',
+                          'Tax 1 Value'      : 'sum',
+                          'Name'             : 'count',
+                          'Email'            : 'count'})
                     .reset_index()
                     .rename(columns={'province_or_county' : 'County',
-                                'Lineitem quantity'  : 'Products',
-                                'Lineitem price'     : 'Gross sales',
-                                'Lineitem discount'  : 'Discounts',
-                                'Tax 1 Value'        : 'Taxes',
-                                'Name'               : 'Orders'}))
+                                     'Lineitem quantity'  : 'Products',
+                                     'Lineitem price'     : 'Gross sales',
+                                     'Lineitem discount'  : 'Discounts',
+                                     'Tax 1 Value'        : 'Taxes',
+                                     'Name'               : 'Orders',
+                                     'Email'              : 'Customers'}))
 
 # Add net sales metrics for each county
 df_counties['Net sales'] = (df_counties['Gross sales']
                             - df_counties['Discounts']
                             - df_counties['Taxes'])
+df_counties['Life Time Value'] = (df_counties['Net sales'] / df_counties['Customers'])
+df_counties.round(2)
+
+# Reorder columns for beter datatable reading
+df_counties = df_counties[[
+    'County',
+    'Orders',
+    'Products',
+    'Gross sales',
+    'Net sales',
+    'Life Time Value'
+]]
 
 # Urls to use HTTP GET requests to for regional shapefiles of the Netherlands
 url_states = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=1.1.0&typeName=cbsgebiedsindelingen:cbs_provincie_2022_gegeneraliseerd&outputFormat=json"
@@ -176,18 +205,27 @@ app.layout = html.Div(
                                 html.Button(
                                     'Orders',
                                     id='button-orders',
+                                    className='metric-button',
                                     n_clicks=0),
                                 html.Button(
                                     'Gross sales',
                                     id='button-gross',
+                                    className='metric-button',
                                     n_clicks=0),
                                 html.Button(
                                     'Net Sales',
                                     id='button-net',
+                                    className='metric-button',
                                     n_clicks=0),
                                 html.Button(
                                     'Products',
                                     id='button-products',
+                                    className='metric-button',
+                                    n_clicks=0),
+                                html.Button(
+                                    'Life Time Value',
+                                    id='button-ltv',
+                                    className='metric-button',
                                     n_clicks=0)
                             ]
                         ),
@@ -201,7 +239,7 @@ app.layout = html.Div(
                     id="marvelmap-container",
                     children=[
                         dcc.Graph(id='choropleth'),
-                    ]
+                    ],
                 ),
                 html.Div(
                     id="marvelchart-container",
@@ -210,11 +248,13 @@ app.layout = html.Div(
                     ]
                 ),
                 html.Div(
-                    id="datatable-container",
+                    id="data-table-container",
                     children=[
                         dash_table.DataTable(
                             id='data-table',
-                            sort_action="native"),
+                            sort_action="native",
+                            fixed_rows={'headers': True},
+                            style_table={'height': 400} ),
                     ]
                 ),
                 dcc.Store(id="datasets", storage_type='session')
@@ -236,10 +276,11 @@ app.layout = html.Div(
         Input('button-orders', 'n_clicks'),
         Input('button-gross', 'n_clicks'),
         Input('button-net', 'n_clicks'),
-        Input('button-products', 'n_clicks')
+        Input('button-products', 'n_clicks'),
+        Input('button-ltv', 'n_clicks')
     ]
 )
-def display_figures(region_is_states, btn1, btn2, btn3, btn4):
+def display_figures(region_is_states, btn1, btn2, btn3, btn4, btn5):
     # Get last pressed button id
     changed_id = [p['prop_id'] for p in callback_context.triggered][0]
 
@@ -252,6 +293,8 @@ def display_figures(region_is_states, btn1, btn2, btn3, btn4):
         metric = 'Net sales'
     elif 'button-products' in changed_id:
         metric = 'Products'
+    elif 'button-ltv' in changed_id:
+        metric = 'Life Time Value'
     elif 'region-is-states-switch' in changed_id:
         # Metric set to Orders when regions are switched
         metric = 'Orders'
@@ -259,33 +302,35 @@ def display_figures(region_is_states, btn1, btn2, btn3, btn4):
         raise PreventUpdate
 
     if DEBUG:
-        app.logger.info(metric)
+        app.logger.info(f"Metric selection button pressed: {metric}")
 
     # Depending on the region switch determine the args for the figures
     if region_is_states:
+        df_states_sorted = df_states.sort_values(by=[metric], ascending=False)
+
+        # Arguments for figures on state level
         choropleth_args = {
-            'data_frame': df_states,
+            'data_frame': df_states_sorted,
             'locations': 'State',
             'geojson': geojson_states}
-
         histogram_args = {
-            'data_frame': df_states,
+            'data_frame': df_states_sorted,
             'x': 'State'
         }
-
-        table_data, table_columns = generate_table(df_states)
+        table_data, table_columns = generate_table(df_states_sorted)
     else:
+        df_counties_sorted = df_counties.sort_values(by=[metric], ascending=False)
+
+        # Arguments for figures on county level
         choropleth_args = {
-            'data_frame': df_counties,
+            'data_frame': df_counties_sorted,
             'locations': 'County',
             'geojson': geojson_counties}
-
         histogram_args = {
-            'data_frame': df_counties,
+            'data_frame': df_counties_sorted[:10],
             'x': 'County'
         }
-
-        table_data, table_columns = generate_table(df_counties)
+        table_data, table_columns = generate_table(df_counties_sorted)
 
     # Create choropleth using args set by app options
     map = px.choropleth_mapbox(**choropleth_args,
@@ -294,7 +339,7 @@ def display_figures(region_is_states, btn1, btn2, btn3, btn4):
                                mapbox_style="carto-positron",
                                color_continuous_scale=map_cmap,
                                center=dict(lon=5.2913, lat=52.1326),
-                               zoom=6)
+                               zoom=5.5)
     map = map.update_layout(margin={'l': 40, 'b': 40,'t': 10, 'r': 0},
                             hovermode='closest')
 
