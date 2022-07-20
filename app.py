@@ -1,163 +1,309 @@
-import plots
-import dash
+import requests
 import json
-import dash_table as dt
+import dash
 import pandas as pd
+import geopandas as gpd
+import plotly.express as px
+import dash_daq as daq
 
+from dash import dash_table
 from dash import dcc, html, callback_context
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
 
-# Static collumn names to use when enriching data
-CONFIG = {
-    "cnames": {
-        "orders": "Name",
-        "clients": "Email",
-        "revenue": "Total",
-        "zip": "Billing Zip"
-    }
-}
 
-# Links to get (http request) geojson files
-url_counties = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=2.0.0&typeName=cbs_gemeente_2017_gegeneraliseerd&outputFormat=json"
+DEBUG = True
+
+
+# Change GeoPandas GeoDataFrame to GeoJSON
+def gdf_to_geojson(gdf):
+    gdf = gdf.to_crs(epsg=4326)
+    gdf.to_file('data/geojsonfile.json', driver = 'GeoJSON')
+
+    with open('data/geojsonfile.json') as geofile:
+        data = json.load(geofile)
+
+    return data
+
+
+# Add currency symbol to strings in passed columns
+def add_currency(df, columns):
+    for col in columns:
+        df[col] = df[col].apply(lambda x: "€" + "{:.2f}".format(float(x)))
+
+    return df
+
+
+# Generates table parameters from given dataframe
+def generate_table(df_in):
+    df_out = pd.DataFrame(df_in, copy=True)
+    df_out = add_currency(df_out, ['Gross sales', 'Net sales'])
+    table_data = df_out.to_dict('records')
+    table_columns = [{"name": i, "id": i} for i in df_out.columns]
+
+    return table_data, table_columns
+
+
+# Read dummy Shopify order dataset
+orders_df = pd.read_csv("data/dummy_orders.csv", low_memory=False)
+
+# Filter out everything outside of NL
+orders_df = orders_df[orders_df['Shipping Country'] == "NL"]
+
+# Group by order name and customer email
+orders_df = (orders_df.groupby(by=['Name', 'Email', 'Shipping Zip'])
+                      .sum()
+                      .reset_index())
+
+# Turn Dutch postcode to just the digits:
+# 1054BD --> 1054
+orders_df['Shipping Zip'] = orders_df['Shipping Zip'].apply(lambda z: str(z)[:4])
+
+# Read regional data of the Netherlands and cast zip codes to strings
+nl_regional_df = pd.read_csv("data/data_NL.csv", delimiter=',', thousands='.')
+nl_regional_df['postal code'] = nl_regional_df['postal code'].astype(str)
+nl_regional_df
+
+# Merge order data with regional data
+pd.set_option('display.max_columns', None)
+merge = orders_df.merge(
+    nl_regional_df,
+    left_on='Shipping Zip',
+    right_on='postal code')
+
+# Group the merged data by states and re-organise to get metrics
+df_states = (merge.groupby(by=['state', 'Population province', 'BBP province'])
+                  .agg({'Lineitem quantity': 'sum',
+                   'Lineitem price'   : 'sum',
+                   'Lineitem discount': 'sum',
+                   'Tax 1 Value'      : 'sum',
+                   'Name'             : 'count',
+                   })
+                  .reset_index()
+                  .rename(columns={'state'              : 'State',
+                              'Lineitem quantity'  : 'Products',
+                              'Lineitem price'     : 'Gross sales',
+                              'Lineitem discount'  : 'Discounts',
+                              'Tax 1 Value'        : 'Taxes',
+                              'Name'               : 'Orders',
+                              'Population province': 'State population',
+                              'BBP province'       : 'State BBP'}))
+
+# Add net sales metrics for each state
+df_states['Net sales'] = (df_states['Gross sales']
+                          - df_states['Discounts']
+                          - df_states['Taxes'])
+
+# Group the merged data by counties and re-organise to get metrics
+df_counties = (merge.groupby(by=['province_or_county'])
+                    .agg({'Lineitem quantity': 'sum',
+                     'Lineitem price'   : 'sum',
+                     'Lineitem discount': 'sum',
+                     'Tax 1 Value'      : 'sum',
+                     'Name'             : 'count'})
+                    .reset_index()
+                    .rename(columns={'province_or_county' : 'County',
+                                'Lineitem quantity'  : 'Products',
+                                'Lineitem price'     : 'Gross sales',
+                                'Lineitem discount'  : 'Discounts',
+                                'Tax 1 Value'        : 'Taxes',
+                                'Name'               : 'Orders'}))
+
+# Add net sales metrics for each county
+df_counties['Net sales'] = (df_counties['Gross sales']
+                            - df_counties['Discounts']
+                            - df_counties['Taxes'])
+
+# Urls to use HTTP GET requests to for regional shapefiles of the Netherlands
 url_states = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=1.1.0&typeName=cbsgebiedsindelingen:cbs_provincie_2022_gegeneraliseerd&outputFormat=json"
+url_counties = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=2.0.0&typeName=cbs_gemeente_2017_gegeneraliseerd&outputFormat=json"
 
-options_dropdown = [
-    {'label': 'Total orders', 'value': 'orders'},
-    {'label': 'Total clients', 'value': 'clients'},
-    {'label': 'Revenue', 'value': 'revenue'},
-    {'label': 'Lifetime Value (LTV)', 'value': 'LTV'},
-    {'label': 'Average Order Value (AOV)', 'value': 'AOV'}
-]
+# Read shape file for states of the Netherlands and convert to geojson
+gdf_shapes_states = gpd.read_file(requests.get(url_states).text)
+gdf_shapes_states['statnaam'].replace('Fryslân', 'Friesland', inplace=True)
+geojson_states = gdf_to_geojson(gdf_shapes_states)
+
+# Read shape file for counties of the Netherlands and convert to geojson
+gdf_shapes_counties = gpd.read_file(requests.get(url_counties).text)
+geojson_counties = gdf_to_geojson(gdf_shapes_counties)
+
+# Colormap for choropleth
+map_cmap = px.colors.sequential.Blues[1:]
 
 app = dash.Dash(__name__)
 server = app.server
 
+app.layout = html.Div(
+    id="root",
+    children=[
+        html.Div(
+            id="header",
+            children=[
+                html.Div(
+                    id="description-container",
+                    children=[
+                        html.H1(
+                            id="title",
+                            children="MarvelMaps"),
+                        html.P(
+                            id="description",
+                            children="A short introduction about the project \
+                            and why it is of value to the user. Disclaimer \
+                            about privacy and safety of data being used. \
+                            First step, upload your data ->"
+                        )
+                    ]
+                ),
+                html.Div(
+                    id="logo-container",
+                    children=[
+                        html.H1(
+                            children="Marveltest Logo"
+                        )
+                    ]
+                )
+            ]
+        ),
+        html.Div(
+            id="app-container",
+            children=[
+                html.Div(
+                    id="options-container",
+                    children=[
+                        html.Div(
+                            id="metric-buttons",
+                            children=[
+                                html.Button(
+                                    'Orders',
+                                    id='button-orders',
+                                    n_clicks=0),
+                                html.Button(
+                                    'Gross sales',
+                                    id='button-gross',
+                                    n_clicks=0),
+                                html.Button(
+                                    'Net Sales',
+                                    id='button-net',
+                                    n_clicks=0),
+                                html.Button(
+                                    'Products',
+                                    id='button-products',
+                                    n_clicks=0)
+                            ]
+                        ),
+                        daq.BooleanSwitch(
+                            id='region-is-states-switch',
+                            on=True),
+                    ]
+                ),
 
-###############################################################################
-#                           APP (BEGIN)
-###############################################################################
-app.layout = html.Div(children=[
-    html.Div(html.Img(src='assets/marvel_logo.png', style={'height':'20%', 'width':'20%'})),
-
-    dcc.RadioItems(
-        id='region_selection',
-        options=[
-            {'label': 'Provinces', 'value': 'Provinces'},
-            {'label': 'Counties', 'value': 'Counties'}
-        ],
-        value='Provinces'
-    ),
-
-    html.Div([
-        dcc.Dropdown(
-        id='metric_selection',
-        options=options_dropdown,
-        value='clients'
-    )
-    ]),
-
-    dcc.Upload(
-        id='upload_data',
-        children=html.Div([
-            'Drag and Drop or ',
-            html.A('Select Files')
-        ]),
-        style={
-            'width': '100%',
-            'height': '60px',
-            'lineHeight': '60px',
-            'borderWidth': '1px',
-            'borderStyle': 'dashed',
-            'borderRadius': '5px',
-            'textAlign': 'center',
-            'margin': '10px'
-        },
-        # Allow multiple files to be uploaded
-        multiple=True
-    ),
-
-    html.Button('Read data', id='button_data'),
-
-    html.Button('Update Figures', id='button_U'),
-
-    html.Div(children=[
-        dcc.Graph(id='choropleth', style={'width': '50%', 'display': 'inline-block'}),
-        dcc.Graph(id='histogram',
-                  style={'width': '50%', 'display': 'inline-block'})],
-        style={'backgroundColor': '#13265290'}
-    ),
-    dt.DataTable(id='data-table',
-                 style_data = {
-                    'color': 'black',
-                    'backgroundColor': '#EFF4FA'
-    },
-                 style_header = {
-                    'backgroundColor': '#13265290',
-                    'fontWeight': 'bold'
-    },
-                 sort_action="native"
-    ),
-
-    dcc.Store(id="datasets", storage_type='session')
-
-], style={'margin': 'auto', 'width': '80%'})
-
-###############################################################################
-#                           APP (END)
-###############################################################################
+                html.Div(
+                    id="marvelmap-container",
+                    children=[
+                        dcc.Graph(id='choropleth'),
+                    ]
+                ),
+                html.Div(
+                    id="marvelchart-container",
+                    children=[
+                        dcc.Graph(id='histogram')
+                    ]
+                ),
+                html.Div(
+                    id="datatable-container",
+                    children=[
+                        dash_table.DataTable(
+                            id='data-table',
+                            sort_action="native"),
+                    ]
+                ),
+                dcc.Store(id="datasets", storage_type='session')
+            ]
+        )
+    ]
+)
 
 
-@app.callback(Output('data-table', 'data'),
-              Output('data-table', 'columns'),
-              Output('histogram', 'figure'),
-              Output('choropleth', 'figure'),
-              Input('button_U', 'n_clicks'),
-              State('datasets', 'data'),
-              State('metric_selection', 'value'),
-              State('region_selection', 'value'))
-def update_figures(n_clicks, datasets_json, metric, region):
+@app.callback(
+    [
+        Output('choropleth', 'figure'),
+        Output('histogram', 'figure'),
+        Output('data-table', 'data'),
+        Output('data-table', 'columns')
+    ],
+    [
+        Input('region-is-states-switch', 'on'),
+        Input('button-orders', 'n_clicks'),
+        Input('button-gross', 'n_clicks'),
+        Input('button-net', 'n_clicks'),
+        Input('button-products', 'n_clicks')
+    ]
+)
+def display_figures(region_is_states, btn1, btn2, btn3, btn4):
+    # Get last pressed button id
     changed_id = [p['prop_id'] for p in callback_context.triggered][0]
 
-    if not (datasets_json is not None and 'button_U' in changed_id):
-        raise PreventUpdate
-
-    datasets = json.loads(datasets_json)
-    df = pd.DataFrame.from_records(datasets[region])
-    df.sort_values(metric, inplace=True, ascending=False)
-
-    mmap = plots.generate_map(df, metric, region, url_states, url_counties)
-
-    if region == 'Counties':
-        df = df.reset_index(drop=True).iloc[:10]
-
-    histogram = plots.generate_histogram(df, metric)
-    data, columns = plots.generate_table(df)
-
-    return data, columns, histogram, mmap
-
-
-@app.callback(Output('datasets', 'data'),
-                Input('button_data', 'n_clicks'),
-                State('upload_data', 'contents'),
-                State('upload_data', 'filename'))
-def process_data(n_clicks, list_of_contents, list_of_names):
-    if not ('button_U' in [p['prop_id'] for p in callback_context.triggered][0] or list_of_contents):
-        raise PreventUpdate
-
-    return plots.enrich_data(list_of_contents, list_of_names, url_states, url_counties)
-
-
-@app.callback(Output("metric_selection", "options"),
-              Input("region_selection", "value"))
-def update_dropdown(region):
-    if region == 'Provinces':
-        return options_dropdown + [
-            {'label': 'Revenue relative to BBP of region', 'value': 'rev_BBP'},
-            {'label': 'Clients per 100.000 population', 'value': 'clients_pop'}]
+    # Set metric to last pressed button
+    if 'button-orders' in changed_id:
+        metric = 'Orders'
+    elif 'button-gross' in changed_id:
+        metric = 'Gross sales'
+    elif 'button-net' in changed_id:
+        metric = 'Net sales'
+    elif 'button-products' in changed_id:
+        metric = 'Products'
+    elif 'region-is-states-switch' in changed_id:
+        # Metric set to Orders when regions are switched
+        metric = 'Orders'
     else:
-        return options_dropdown
+        raise PreventUpdate
+
+    if DEBUG:
+        app.logger.info(metric)
+
+    # Depending on the region switch determine the args for the figures
+    if region_is_states:
+        choropleth_args = {
+            'data_frame': df_states,
+            'locations': 'State',
+            'geojson': geojson_states}
+
+        histogram_args = {
+            'data_frame': df_states,
+            'x': 'State'
+        }
+
+        table_data, table_columns = generate_table(df_states)
+    else:
+        choropleth_args = {
+            'data_frame': df_counties,
+            'locations': 'County',
+            'geojson': geojson_counties}
+
+        histogram_args = {
+            'data_frame': df_counties,
+            'x': 'County'
+        }
+
+        table_data, table_columns = generate_table(df_counties)
+
+    # Create choropleth using args set by app options
+    map = px.choropleth_mapbox(**choropleth_args,
+                               color=metric,
+                               featureidkey = 'properties.statnaam',
+                               mapbox_style="carto-positron",
+                               color_continuous_scale=map_cmap,
+                               center=dict(lon=5.2913, lat=52.1326),
+                               zoom=6)
+    map = map.update_layout(margin={'l': 40, 'b': 40,'t': 10, 'r': 0},
+                            hovermode='closest')
+
+    # Create histogram using metric and region
+    his = px.histogram(**histogram_args, y=metric)
+    his = his.update_layout(yaxis_title=metric)
+
+    return map, his, table_data, table_columns
 
 
 if __name__ == '__main__':
-    app.run_server(debug=False, host="0.0.0.0", port=8080)
+    app.run_server(debug=DEBUG, host="0.0.0.0", port=8080)
