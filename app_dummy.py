@@ -1,36 +1,26 @@
-import plots
+# import plots
+import requests
 import dash
-import json
 import dash_daq as daq
 import dash_table as dt
 import pandas as pd
+import geopandas as gpd
+
 
 from dash import dcc, html, callback_context
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
 
 
-# Static collumn names to use when enriching data
-CONFIG = {
-    "cnames": {
-        "orders": "Name",
-        "clients": "Email",
-        "revenue": "Total",
-        "zip": "Billing Zip"
-    }
-}
-
 # Links to get (http request) geojson files
-url_counties = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=2.0.0&typeName=cbs_gemeente_2017_gegeneraliseerd&outputFormat=json"
 url_states = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=1.1.0&typeName=cbsgebiedsindelingen:cbs_provincie_2022_gegeneraliseerd&outputFormat=json"
+url_counties = "https://geodata.nationaalgeoregister.nl/cbsgebiedsindelingen/wfs?request=GetFeature&service=WFS&version=2.0.0&typeName=cbs_gemeente_2017_gegeneraliseerd&outputFormat=json"
 
-options_dropdown = [
-    {'label': 'Total orders', 'value': 'orders'},
-    {'label': 'Total clients', 'value': 'clients'},
-    {'label': 'Revenue', 'value': 'revenue'},
-    {'label': 'Lifetime Value (LTV)', 'value': 'LTV'},
-    {'label': 'Average Order Value (AOV)', 'value': 'AOV'}
-]
+# Data with Shopify orders
+df_orders = pd.read_csv('data/dummy_orders.csv')
+
+gdf_states = gpd.read_file(requests.get(url_states).text)
+gdf_counties = gpd.read_file(requests.get(url_counties).text)
 
 app = dash.Dash(__name__)
 server = app.server
@@ -73,10 +63,10 @@ app.layout = html.Div(
             id="app-container",
             children=[
                 html.Div(
-                    id="options",
+                    id="options-container",
                     children=[
                         html.Div(
-                            id="metric-buttons-container",
+                            id="metric-buttons",
                             children=[
                                 html.Button('Total orders', id='button-total-orders', n_clicks=0),
                                 html.Button('Total clients', id='button-total-clients',  n_clicks=0),
@@ -87,30 +77,46 @@ app.layout = html.Div(
                             ]
                         ),
                         daq.BooleanSwitch(id='region-switch', on=False),
-                        html.Div(
-                            children=[html.Button('Update Figures', id='button_U')]
-                        ),
                     ]
                 ),
 
                 html.Div(
-                    id="marvelmap",
+                    id="marvelmap-container",
                     children=[
                         dcc.Graph(id='choropleth'),
                     ]
                 ),
                 html.Div(
-                    id="marvelchart",
+                    id="marvelchart-container",
                     children=[
                         dcc.Graph(id='histogram')
                     ]
                 ),
-                dt.DataTable(id='datatable', sort_action="native"),
+                html.Div(
+                    id="datatable-container",
+                    children=[
+                        dt.DataTable(id='datatabel', sort_action="native"),
+                    ]
+                ),
                 dcc.Store(id="datasets", storage_type='session')
             ]
         )
     ]
 )
+
+
+###############################################################################
+#                           APP (END)
+###############################################################################
+
+if __name__ == '__main__':
+    app.run_server(debug=False, host="0.0.0.0", port=8080)
+
+
+
+
+
+# Previous App
 
 
 
@@ -161,64 +167,3 @@ app.layout = html.Div(
 #     dcc.Store(id="datasets", storage_type='session')
 
 # ], style={'margin': 'auto', 'width': '80%'})
-
-
-###############################################################################
-#                           APP (END)
-###############################################################################
-
-
-
-@app.callback(Output('datasets', 'data'),
-              Input('button_U', 'n_clicks'),
-              State('datasets', 'data'))
-def load_data(n_clicks, datasets_json):
-    if datasets_json is not None:
-        raise PreventUpdate
-
-    return plots.enrich_data([], [], url_states, url_counties, dummy_data=True)
-
-
-@app.callback(Output('data-table', 'data'),
-              Output('data-table', 'columns'),
-              Output('histogram', 'figure'),
-              Output('choropleth', 'figure'),
-              Input('button_U', 'n_clicks'),
-              State('datasets', 'data'),
-              State('metric_selection', 'value'),
-              State('region-selection', 'value'))
-def update_figures(n_clicks, datasets_json, metric, region):
-    changed_id = [p['prop_id'] for p in callback_context.triggered][0]
-
-    if datasets_json is None or 'button_U' not in changed_id:
-        raise PreventUpdate
-
-
-    datasets = json.loads(datasets_json)
-    df = pd.DataFrame.from_records(datasets[region])
-    df.sort_values(metric, inplace=True, ascending=False)
-
-    mmap = plots.generate_map(df, metric, region, url_states, url_counties)
-
-    if region == 'Counties':
-        df = df.reset_index(drop=True).iloc[:10]
-
-    histogram = plots.generate_histogram(df, metric)
-    data, columns = plots.generate_table(df)
-
-    return data, columns, histogram, mmap
-
-
-@app.callback(Output("metric_selection", "options"),
-              Input("region-selection", "value"))
-def update_dropdown(region):
-    if region == 'Provinces':
-        return options_dropdown + [
-            {'label': 'Revenue relative to BBP of region', 'value': 'rev_BBP'},
-            {'label': 'Clients per 100.000 population', 'value': 'clients_pop'}]
-    else:
-        return options_dropdown
-
-
-if __name__ == '__main__':
-    app.run_server(debug=False, host="0.0.0.0", port=8080)

@@ -3,7 +3,6 @@ from app import CONFIG
 import data
 import utils
 import json
-import numpy as np
 import pandas as pd
 
 
@@ -54,7 +53,6 @@ def enrich_data(list_of_contents, list_of_names, url_states, url_counties, dummy
                                                           'rev_BBP': 'float64',
                                                           'AOV': 'float64',
                                                           'LTV': 'float64'})
-
 
     datasets['Counties'][CONFIG['cnames']['zip']] = datasets['Counties'][CONFIG['cnames']['zip']].apply(lambda z: str(z)[:4])
     counties = data.get_county_shapes(url_counties)
